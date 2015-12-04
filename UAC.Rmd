@@ -1,0 +1,412 @@
+---
+title: "Unaccompanied children"
+author: "Craig Jolley"
+date: "October 19, 2015"
+output: html_document
+---
+
+First, load the necessary packages:
+
+```{r,message=FALSE}
+library(xlsx)
+library(plyr)
+library(ggplot2)
+library(ggmap)
+```
+
+Now all the files. Note that, while the data in most of Excel spreadsheets start on line 4, a few start on line 3. The interesting columns will end up together in a dataframe called `all_uac`.
+
+```{r}
+setwd("C:/Users/Craig/Desktop/UACApprehensions_201406_to_201509")
+files <- c('UACApprehensions_201406.xls','UACApprehensions_201407.xls',
+           'UACApprehensions_201407_201408.xls','UACApprehensions_201408_201409.xls',
+           'UACApprehensions_201409_201410.xls','UACApprehensions_201410_201411.xls',
+           'UACApprehensions_201411_201412.xls','UACApprehensions_201501_201502.xls',
+           'UACApprehensions_201502_201503.xlsx','UACApprehensions_201503_201504.xlsx',
+           'UACApprehensions_201504_201505.xlsx','UACApprehensions_201505_201506.xlsx',
+           'UACApprehensions_201506_201507.xlsx','UACApprehensions_201507_201508.xlsx',
+           'UACApprehensions_201508_201509.xlsx')
+start <- rep(4,15)
+start[[4]] <- 3 # inconsistent format between spreadsheets
+start[[5]] <- 3
+datalist <- lapply(1:15,function(i) read.xlsx2(files[i],1,startRow=start[i],
+                                               stringsAsFactors=FALSE)) 
+all_uac <- data.frame(
+  name=unlist(lapply(datalist,function(x) x$Subject.Name)),
+  country=unlist(lapply(datalist,function(x) x$Citizenship.Country.Name)),
+  city=unlist(lapply(datalist,function(x) x$Birth.City.Name)),
+  date=unlist(lapply(datalist,function(x) x$Apprehension.Date)),
+  sector=unlist(lapply(datalist,function(x) x$Sector.Name)),
+  age=unlist(lapply(datalist,function(x) x$Age.at.Apprehension)),
+  stringsAsFactors=FALSE
+)
+# fix dates; see https://en.wikipedia.org/wiki/Microsoft_Excel#Date_problems
+all_uac$date <- as.Date(as.numeric(all_uac$date),origin=as.Date("1899-12-30"))
+# standardize funny or missing city names
+all_uac$city[all_uac$city==''] <- '<unknown>'
+all_uac$city[all_uac$city==','] <- '<unknown>'
+all_uac$city[all_uac$city=='.'] <- '<unknown>'
+all_uac$city[all_uac$city=='..'] <- '<unknown>'
+all_uac$city[all_uac$city=='...'] <- '<unknown>'
+all_uac$city[all_uac$city=='...'] <- '<unknown>'
+all_uac$city[all_uac$city==".SAN ANDRES SACABAJA"] <- "SAN ANDRES SACABAJA"
+all_uac$city[all_uac$city==".SANTIAGO CHIMALTENANGO"] <- "SANTIAGO CHIMALTENANGO"
+# remove duplicate entries (about 1.5% of total)
+all_uac <- unique(all_uac)
+```
+
+Now compress this down into a dataframe giving countries of citizenship, cities of birth, and monthly counts, and save it to a CSV file.
+
+```{r}
+# can I do this better using lubridate?
+uac_totals <- ddply(all_uac,.(country,city),
+                 summarize,
+                 Jun14=sum(date>="2014-06-01" & date<"2014-07-01"),
+                 Jul14=sum(date>="2014-07-01" & date<"2014-08-01"),
+                 Aug14=sum(date>="2014-08-01" & date<"2014-09-01"),
+                 Sep14=sum(date>="2014-09-01" & date<"2014-10-01"),
+                 Oct14=sum(date>="2014-10-01" & date<"2014-11-01"),
+                 Nov14=sum(date>="2014-11-01" & date<"2014-12-01"),
+                 Dec14=sum(date>="2014-12-01" & date<"2015-01-01"),
+                 Jan15=sum(date>="2015-01-01" & date<"2015-02-01"),
+                 Feb15=sum(date>="2015-02-01" & date<"2015-03-01"),
+                 Mar15=sum(date>="2015-03-01" & date<"2015-04-01"),
+                 Apr15=sum(date>="2015-04-01" & date<"2015-05-01"),
+                 May15=sum(date>="2015-05-01" & date<"2015-06-01"),
+                 Jun15=sum(date>="2015-06-01" & date<"2015-07-01"),
+                 Jul15=sum(date>="2015-07-01" & date<"2015-08-01"),
+                 Aug15=sum(date>="2015-08-01" & date<"2015-09-01"),
+                 Sep15=sum(date>="2015-09-01" & date<"2015-10-01"),
+                 total=sum(date>="2014-06-01" & date<"2015-10-01"))
+uac_totals[is.na(uac_totals)] <- 0
+```
+
+A few warnings at this point:
+
+- The September 2015 data only goes through 9/15. This means that if you compare different months, it will look like things went down in September. 
+- The countrties of citizenship are not necessarily the countries in which the cities of birth are located. For example, 2 of the San Pedro Sula kids are apparently Salvadoran citizens.
+- There's a good chance that some cities are misspelled. For example, if we alphabetize cities some of the first few are "ACAHULTLAN", "ACAHUTLA", "ACAJULLA", "ACAJULTA", "ACAJUTHLA", and "ACAJUTL". FWIW, the correct spelling is "Acajutla" (it's in El Salvador).
+
+Just for fun, let's have a look at how the total varies with time:
+
+```{r}
+ggplot(all_uac,aes(x=date)) +
+  geom_histogram(binwidth=1,color='tomato1') +
+  theme_classic() + 
+  theme(text=element_text(size=20),
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank()) 
+
+```
+
+Things drop dramatically in the Fall of 2014, and have been rising steadily since the beginning of 2015 (after a suspicious data gap in January). Where is this rise the most dramatic?
+
+```{r}
+slopes <- apply(uac_totals,1,function(r) {
+  tmp <- data.frame(x=1:8,y=as.numeric(r[8:15]))
+  tmp_lm <- lm(y ~ x,tmp)
+  p <- summary(tmp_lm)$coefficients[2,4] 
+  if (is.na(p) | p > 0.05) {
+    return(0)
+  }
+  return(summary(tmp_lm)$coefficients[2,1])
+})
+uac_totals$slope <- slopes
+head(uac_totals[order(uac_totals$slope,decreasing=TRUE),])
+```
+
+San Pedro Sula is leading the pack, followed by San Miguel and Huehuetenango. We can look at the monthly totals for SPS in particular:
+
+```{r}
+sps <- colSums(uac_totals[uac_totals$city=="SAN PEDRO SULA",3:18])
+df <- data.frame(m=names(sps),t=sps)
+df$m <- factor(df$m,levels=as.character(df$m))
+ggplot(df,aes(x=m,y=t)) +
+  geom_bar(stat='identity') +
+  theme_classic() +
+  theme(text=element_text(size=10),
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank()) 
+```        
+
+
+Let's see if we can start to geocode these.
+
+```{r}
+unique(uac_totals$country)
+```
+
+El Salvador is consistently misspelled as "El Savador." Let's make sure we fix that. Find lat/long pairs using the DSK API.
+
+```{r}
+uac_totals[uac_totals$country=='EL SAVADOR','country'] <- 'EL SALVADOR'
+uac_geo <- data.frame(country=uac_totals$country,city=uac_totals$city)
+uac_geo$str <- paste(uac_geo$city,uac_geo$country,sep=", ")
+latlong <- ldply(uac_geo$str,function(x)
+  geocode(x,source="dsk",output="latlon"))
+uac_geo <- cbind(uac_geo,latlong)
+uac_totals$lat <- latlong$lat
+uac_totals$long <- latlong$lon
+sum(is.na(uac_totals$lat))
+```
+
+We were able to get lat/long coordinates for every single location!
+
+But what about those misspelled place names? It looks like, in cases where the city is unknown, a place name is inferred based on the country alone. If no country is available either, the coordinates are (inexplicably) somewhere north of Svalbard.
+
+```{r}
+uac_geo[5:11,c('country','city','lon','lat')]
+```
+
+We've got 6 different spellings of Acajutla, El Salvador. One of these (the correctly-spelled one) was correctly geocoded, while the rest seem to have been assigned to the centroid of El Salvador.
+
+Let's set the lat/long pairs for the incorrectly-georeferenced ones to NA.
+
+```{r}
+country_coords <- data.frame(row.names=c('EL SALVADOR','GUATEMALA',
+                                         'HONDURAS','MEXICO'))
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+country_coords$lat <- lapply(rownames(country_coords), function(x)
+  Mode(uac_geo[uac_geo$country==x,'lat']))
+country_coords$lon <- lapply(rownames(country_coords), function(x)
+  Mode(uac_geo[uac_geo$country==x,'lon']))
+for (x in rownames(country_coords)) {
+  is.na(uac_geo[uac_geo$country==x & uac_geo$lat==country_coords[x,'lat'] &
+            uac_geo$lat==country_coords[x,'lat'],c('lat','lon')]) <- TRUE
+}
+sum(!is.na(uac_geo$lat))
+```
+
+So we have reasonable coordinates for 2307 place names -- 45% of the total. Now our Acajutlas look like:
+
+```{r}
+uac_geo[5:11,c('country','city','lon','lat')]
+```
+
+Does the Google Maps API do any better? I only get 2500 free queries per day, so I need to make sure I apply them to places that still need geocoding. 
+API calls take about 1s each (42 min for 2500), so decrease the value of `queries_remaining` if you're in a hurry.
+
+```{r}
+queries_remaining <- geocodeQueryCheck() # change this value to run a smaller query
+code_me <- head(uac_geo[is.na(uac_geo$lat) | is.na(uac_geo$lon),'str'],
+                queries_remaining)
+latlong_g <- ldply(code_me,function(x)
+  geocode(x,source="google",output="latlon"))
+latlong_g$str <- code_me
+names(latlong_g) <- c('lon_g','lat_g','str')
+joined <- join(uac_geo,latlong_g,by='str',type='left')
+joined[5:11,c('str','lat','lon','lat_g','lon_g')]
+```
+
+So the Google Maps API was able to pin down 4 of our Acajutla misspellings, with locations that are close (but not identical) to the DSK result. One ("Acahultlan") was never identified, and one ("Acajutla Costa") appears to actually be a different place.
+
+Unlike DSK, if the Google Maps API can't find a match, it returns NA. So we can see how many places we just haven't been able to geocode so far:
+
+```{r}
+nrow(subset(joined,is.na(lon) & is.na(lon_g)))
+```
+
+When I did this over two days (so that I could get all the Google Maps API calls I needed), I was unable to code 234, or about 4.6% of the total.
+
+If we're going to merge locations, we need a sense of how much the DSK and Google results differ from each other. Do this by finding the shortest distance between each Google-geocoded point and its closest DSK-geocoded point.
+
+```{r}
+library(geosphere)
+r <- 3959 # Earth's radius in miles
+distCosine(c(-89.82709,13.59570),c(-89.82750,13.59278),r)
+
+dist <- function(x,y,df) {
+  # Given a row number x for which lat_g,lon_g != NA
+  # and a row number y for which lat,lon != NA,
+  # calculate the distance in miles between them.
+  # Return NA if inputs are invalid.
+  p1 <- c(df[x,'lon_g'],df[x,'lat_g'])
+  p2 <- c(df[y,'lon'],df[y,'lat'])
+  if (is.na(sum(c(p1,p2))))
+    NA
+  else
+    distCosine(p1,p2,3959) 
+}
+
+closest <- function(x,df) {
+  # Given a row number x in df for which lat_g,lon_g != NA, 
+  # find the closest point with lat,lon != NA.
+  # Return the row number and distance in miles.
+  dists <- sapply(1:nrow(df), function(y) dist(x,y,df))
+  m <- min(dists,na.rm=TRUE)
+  c(match(m,dists),m)
+}
+
+joined$closest <- NA
+joined$dist <- NA
+match_me <- which(!is.na(joined$lon_g))
+# this next step takes ~1.66s per location name
+# or 52 minutes for 1892 records
+joined[match_me,c('closest','dist')] <- 
+  ldply(match_me, function(x) closest(x,joined)) 
+
+short <- joined[joined$dist < 3.0,]
+
+ggplot(short,aes(x=dist)) +
+  geom_histogram(binwidth=0.05,fill='tomato1',color='black') +
+  xlim(0,3) +
+  theme_classic() + 
+  theme(text=element_text(size=20),
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank()) 
+```
+
+Based on this histogram, it's pretty common for the closest match to be within a mile, and less common for it to be further. How often, though, are those close matches really the same location? The best approach here might be to put together lists, sort by distance, and look at them manually.
+
+```{r}
+make_sets <- joined[!is.na(joined$lon_g),c('city','closest','dist')]
+make_sets$city <- as.character(make_sets$city)
+make_sets$key <- paste(make_sets$closest,make_sets$dist,sep=',')
+uniq <- make_sets[!duplicated(make_sets[,c('closest','dist')]),]
+
+matches <- data.frame(
+  merge_to = uniq$closest,
+  merge_us = sapply(uniq$key, function(x) 
+    paste(row.names(make_sets)[which(make_sets$key==x)],collapse=' ')),
+  goodspell = joined$city[uniq$closest],
+  badspell = sapply(uniq$key, function(x) 
+    paste(make_sets$city[which(make_sets$key==x)],collapse=', ')),
+  dist = uniq$dist,
+  row.names=NULL, stringsAsFactors=FALSE
+)
+matches <- matches[order(matches$dist),]
+write.xlsx(matches,"matches.xlsx")
+```
+
+At this point, we need some manual inspection. I inspected these manually and saved the results in matches_check.xlsx.
+
+```{r}
+matches_check <- read.xlsx('matches_check.xlsx',1,stringsAsFactors=FALSE)
+```
+
+Now it's time to mer duplicate rows. I can think of two cases:
+
+- If location A was placed by DSK, and B,C,D were placed by Google Maps, and they have nearby locations and similar-looking names, merge all of them into A.
+- If locations E,F,G were placed by Google Maps in the same location, but no corresponding entry was placed by DSK, merge them into whichever of the three has the highest total number of entries.
+
+
+
+```{r}
+join2 <- join(uac_totals[,c(-21,-22)], # omit lat, long
+              joined[,-3], # omit str
+              by=c('country','city'),type='left')
+# In lines from matches_check with match==Y, I'll need to replace the 
+# misspelled city names with the correct (DSK) version and update the closest
+# field for the DSK version to match the others.
+
+matches_y <- subset(matches_check,match=='Y')
+merge_dsk <- function(i) {
+  # Make the merge corresponding to row i from matches_y in j2
+  df <- data.frame(merge_to=matches_y$merge_to[i],
+                   merge_from=strsplit(matches_y$merge_us[i],' '),
+                   stringsAsFactors=FALSE)
+  names(df) <- c('merge_to','merge_from')
+  df$merge_from <- as.numeric(df$merge_from)
+  join2[df$merge_from,'city'] <- join2[df$merge_to,'city']
+  join2[df$merge_to,'closest'] <- join2[df$merge_from,'closest']
+  join2
+}
+for(i in 1:nrow(matches_y)){
+  join2 <- merge_dsk(i)
+}
+
+# In lines from matches_check with match==N, deem the version with the 
+# highest 'total' field to be the correct spelling, update all of the 
+# 'closest' fields to match its line number, and replace all others with
+# its name.
+
+# row 12 is a good example
+
+matches_n <- subset(matches_check,match=='N')
+merge_g <- function(i) {
+  # Make the merge corresponding to row i from matches_n in join2
+  # If there is only one entry in 'merge_us', then don't do anything
+  df <- data.frame(merge_from=strsplit(matches_n$merge_us[i],' '),
+                   stringsAsFactors=FALSE)
+  if (nrow(df)==1) return(join2)
+  # If there is more than one entry, choose the one with the highest total
+  names(df) <- 'merge_from'
+  df$merge_from <- as.numeric(df$merge_from)
+  df$merge_to <- df$merge_from[which.max(join2[df$merge_from,'total'])]
+  df <- df[!df$merge_from==df$merge_to,]
+  join2[df$merge_from,'city'] <- join2[df$merge_to,'city']
+  join2[df$merge_from,'closest'] <- df$merge_to
+  join2[df$merge_to,'closest'] <- df$merge_to
+  join2
+}
+for(i in 1:nrow(matches_y)){
+  join2 <- merge_dsk(i)
+}
+
+
+# do this with ddply & summarize, requires city and closest to match for all
+# summarize_each -- sum each column separately
+
+
+```
+
+
+
+What can we do about those misspelled place names? We could try using Google's API (see below), but this can get us into trouble when the API rate limits us.
+
+```{r}
+require(RCurl)
+require(jsonlite)
+
+g_suggest <- function(x) {
+  query <- 'http://suggestqueries.google.com/complete/search?output=firefox&client=firefox&hl=en-US&q='
+  x <- gsub(" ","+",x)
+  query <- paste(query,x,sep="")
+  try(g <- getURL(query))
+  result <- try(fromJSON(g)[[2]][1])
+  print(paste(x,result))
+  result
+}
+
+# get unique cities without previous lat/long coordinates
+cities <- data.frame(orig=uac_geo[is.na(uac_geo$lat),]$city)
+# alphabetize
+cities$orig <- cities[order(cities$orig),]
+# get suggestions for each. This takes a really long time.
+cities$suggested <- sapply(cities$orig,function(x) toupper(g_suggest(x)))
+um_latlong <- data.frame(lon=double(),lat=double(),suggested=character())
+for(uc in cities$suggested) {
+  print(uc)
+  if(is.na(uc)) {
+    x <- data.frame(lon=NA,lat=NA)
+  }
+  else {
+    x <- geocode(as.character(uc),source="dsk",output="latlon",messaging=FALSE)
+  }
+  x$suggested <- uc
+  um_latlong <- rbind(um_latlong,x)
+}
+mean(!is.na(um_latlong$lat))
+joined <- join(cities,na.omit(um_latlong),by="suggested",type="left",match="first")
+# 54% of the unmatched cities gave a geocode. A lot of these are probably wrong
+```
+
+A lot of these are probably wrong, so I'll flag them in the final output.
+
+```{r}
+uac_totals$guessed <- is.na(uac_totals$lat)
+names(joined) <- c('suggested','city','long2','lat2')
+join2 <- join(uac_totals,joined,by="city",type="left",match="first")
+uac_totals$suggested <- join2$suggested
+uac_totals[is.na(uac_totals$lat),'lat'] <- join2[is.na(uac_totals$lat),'lat2']
+uac_totals[is.na(uac_totals$long),'long'] <- join2[is.na(uac_totals$long),'long2']
+is.na(uac_totals$guessed)
+```
+Let's save to a CSV file:
+
+```{r}
+write.csv(uac_totals,file="UAC_totals.csv")
+```
