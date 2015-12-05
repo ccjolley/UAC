@@ -292,8 +292,6 @@ Now it's time to mer duplicate rows. I can think of two cases:
 - If location A was placed by DSK, and B,C,D were placed by Google Maps, and they have nearby locations and similar-looking names, merge all of them into A.
 - If locations E,F,G were placed by Google Maps in the same location, but no corresponding entry was placed by DSK, merge them into whichever of the three has the highest total number of entries.
 
-
-
 ```{r}
 join2 <- join(uac_totals[,c(-21,-22)], # omit lat, long
               joined[,-3], # omit str
@@ -311,13 +309,16 @@ merge_dsk <- function(i) {
   names(df) <- c('merge_to','merge_from')
   df$merge_from <- as.numeric(df$merge_from)
   join2[df$merge_from,'city'] <- join2[df$merge_to,'city']
+  join2[df$merge_from,'lon'] <- join2[df$merge_to,'lon']
+  join2[df$merge_from,'lat'] <- join2[df$merge_to,'lat']
   join2[df$merge_to,'closest'] <- join2[df$merge_from,'closest']
   join2
 }
+nrow(subset(join2,is.na(lat))) #2804
 for(i in 1:nrow(matches_y)){
   join2 <- merge_dsk(i)
 }
-
+nrow(subset(join2,is.na(lat))) #1833
 # In lines from matches_check with match==N, deem the version with the 
 # highest 'total' field to be the correct spelling, update all of the 
 # 'closest' fields to match its line number, and replace all others with
@@ -336,77 +337,71 @@ merge_g <- function(i) {
   names(df) <- 'merge_from'
   df$merge_from <- as.numeric(df$merge_from)
   df$merge_to <- df$merge_from[which.max(join2[df$merge_from,'total'])]
+  join2[df$merge_from,'lon'] <- join2[df$merge_to,'lon_g']
+  join2[df$merge_from,'lat'] <- join2[df$merge_to,'lat_g']
+  join2[df$merge_from,'closest'] <- df$merge_to
   df <- df[!df$merge_from==df$merge_to,]
   join2[df$merge_from,'city'] <- join2[df$merge_to,'city']
-  join2[df$merge_from,'closest'] <- df$merge_to
-  join2[df$merge_to,'closest'] <- df$merge_to
   join2
 }
 for(i in 1:nrow(matches_y)){
-  join2 <- merge_dsk(i)
+  join2 <- merge_g(i)
 }
+# Remaining entries didn't match to a DSK geocode; just copy the Google coords
+join2[is.na(join2$lat),'lat'] <- join2[is.na(join2$lat),'lat_g']
+join2[is.na(join2$lon),'lon'] <- join2[is.na(join2$lon),'lon_g']
 
-
-# do this with ddply & summarize, requires city and closest to match for all
-# summarize_each -- sum each column separately
-
+condense_me <- join2[,c(-20,-23:-26)]
+condensed <- ddply(condense_me,.(country,city,lon,lat),numcolwise(sum))
+# Did it work on Acajutla?
+condense_me[c(6:10,120,331),]
+condensed[6,]
+condense_me[c(3762,3765,3768),]
+condensed[2777,]
 
 ```
 
-
-
-What can we do about those misspelled place names? We could try using Google's API (see below), but this can get us into trouble when the API rate limits us.
+So how did we do?
 
 ```{r}
-require(RCurl)
-require(jsonlite)
-
-g_suggest <- function(x) {
-  query <- 'http://suggestqueries.google.com/complete/search?output=firefox&client=firefox&hl=en-US&q='
-  x <- gsub(" ","+",x)
-  query <- paste(query,x,sep="")
-  try(g <- getURL(query))
-  result <- try(fromJSON(g)[[2]][1])
-  print(paste(x,result))
-  result
-}
-
-# get unique cities without previous lat/long coordinates
-cities <- data.frame(orig=uac_geo[is.na(uac_geo$lat),]$city)
-# alphabetize
-cities$orig <- cities[order(cities$orig),]
-# get suggestions for each. This takes a really long time.
-cities$suggested <- sapply(cities$orig,function(x) toupper(g_suggest(x)))
-um_latlong <- data.frame(lon=double(),lat=double(),suggested=character())
-for(uc in cities$suggested) {
-  print(uc)
-  if(is.na(uc)) {
-    x <- data.frame(lon=NA,lat=NA)
-  }
-  else {
-    x <- geocode(as.character(uc),source="dsk",output="latlon",messaging=FALSE)
-  }
-  x$suggested <- uc
-  um_latlong <- rbind(um_latlong,x)
-}
-mean(!is.na(um_latlong$lat))
-joined <- join(cities,na.omit(um_latlong),by="suggested",type="left",match="first")
-# 54% of the unmatched cities gave a geocode. A lot of these are probably wrong
+sum(is.na(condensed$lat)) / nrow(condensed)
 ```
 
-A lot of these are probably wrong, so I'll flag them in the final output.
+We're still missing coordinates for 6% of our locations. But how many kids does this correspond to?
 
 ```{r}
-uac_totals$guessed <- is.na(uac_totals$lat)
-names(joined) <- c('suggested','city','long2','lat2')
-join2 <- join(uac_totals,joined,by="city",type="left",match="first")
-uac_totals$suggested <- join2$suggested
-uac_totals[is.na(uac_totals$lat),'lat'] <- join2[is.na(uac_totals$lat),'lat2']
-uac_totals[is.na(uac_totals$long),'long'] <- join2[is.na(uac_totals$long),'long2']
-is.na(uac_totals$guessed)
+sum(condensed[is.na(condensed$lat),'total'])
+sum(condensed[!is.na(condensed$lat),'total']) / sum(condensed$total)
 ```
-Let's save to a CSV file:
+
+We got geocoordinates for 98.4% of the unaccomapanied children. How do those coordinates look?
 
 ```{r}
-write.csv(uac_totals,file="UAC_totals.csv")
+xmin=-120
+xmax=-82
+ymin=12
+ymax=33
+ggplot(condensed,aes(x=lon,y=lat)) +
+  geom_point(color='tomato',alpha=1) +
+  geom_segment(aes(x=xmin,y=ymin,xend=xmax,yend=ymin)) +
+  geom_segment(aes(x=xmin,y=ymin,xend=xmin,yend=ymax)) +
+  geom_segment(aes(x=xmin,y=ymax,xend=xmax,yend=ymax)) +
+  geom_segment(aes(x=xmax,y=ymin,xend=xmax,yend=ymax)) +
+  theme_classic()
+```
+
+I'm a little concerned about some of these locations. When I Googled a few of them, they turned out to be places that Google Maps just couldn't place correctly. Some of them have as much as 10 or 12 entries.
+
+```{r}
+condensed$goodloc <- 'Y'
+condensed$goodloc[condensed$lon<xmin | condensed$lon>xmax |
+                    condensed$lat<ymin | condensed$lat>ymax] <- 'N'
+nrow(subset(condensed,goodloc=='Y' & !is.na(lat))) / nrow(condensed)
+sum(subset(condensed,goodloc=='Y' & !is.na(lat))$total) / sum(condensed$total)
+```
+
+So, even if we remove these, we have good coordinates for 89.7% of entries and 97.7% of kids. Let's save our results.
+
+```{r}
+write.xlsx(condensed,'condensed.xlsx')
 ```
